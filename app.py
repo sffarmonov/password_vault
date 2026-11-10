@@ -18,6 +18,16 @@ from vault_core import (
 
 
 APP_NAME = "Password Vault 0.2"
+
+# Tk on macOS draws font points at 72 dpi (Windows uses 96), so the same size
+# looks about a quarter smaller there; scale it up to keep text readable.
+IS_MAC = sys.platform == "darwin"
+UI_FONT = "Helvetica Neue" if IS_MAC else "Segoe UI"
+SYMBOL_FONT = "Apple Symbols" if IS_MAC else "Segoe UI Symbol"
+
+
+def fs(size: int) -> int:
+    return round(size * 1.25) if IS_MAC else size
 COLORS = {
     "nav": "#111827",
     "nav_hover": "#1F2937",
@@ -45,11 +55,25 @@ def app_data_dir() -> Path:
     return folder
 
 
+def resource_path(name: str) -> Path:
+    """Path to a bundled file, both from source and inside a PyInstaller build."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / name
+
+
 def center_window(window: tk.Misc, width: int, height: int) -> None:
     window.update_idletasks()
     x = max(0, (window.winfo_screenwidth() - width) // 2)
     y = max(0, (window.winfo_screenheight() - height) // 2)
     window.geometry(f"{width}x{height}+{x}+{y}")
+
+
+def fit_window(window: tk.Misc, min_width: int, min_height: int) -> None:
+    """Grow a dialog to fit its content (fonts differ between OSes) and center it."""
+    window.update_idletasks()
+    width = max(min_width, window.winfo_reqwidth())
+    height = min(max(min_height, window.winfo_reqheight()), window.winfo_screenheight() - 80)
+    center_window(window, width, height)
 
 
 class EntryDialog(tk.Toplevel):
@@ -77,27 +101,27 @@ class EntryDialog(tk.Toplevel):
 
         body = tk.Frame(self, bg=COLORS["card"], padx=34, pady=25)
         body.pack(fill="both", expand=True)
-        tk.Label(body, text="Данные аккаунта", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 19, "bold")).pack(anchor="w")
-        tk.Label(body, text="Все поля шифруются перед сохранением", bg=COLORS["card"], fg=COLORS["muted"], font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 18))
+        tk.Label(body, text="Данные аккаунта", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(19), "bold")).pack(anchor="w")
+        tk.Label(body, text="Все поля шифруются перед сохранением", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(10))).pack(anchor="w", pady=(2, 18))
 
         self._field(body, "Название *", "title")
         self._field(body, "Логин / email", "username")
 
-        tk.Label(body, text="Пароль", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(9, 5))
+        tk.Label(body, text="Пароль", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(9, 5))
         password_row = tk.Frame(body, bg=COLORS["card"])
         password_row.pack(fill="x")
-        self.password_entry = ttk.Entry(password_row, textvariable=self.vars["password"], show="•", font=("Segoe UI", 11))
+        self.password_entry = ttk.Entry(password_row, textvariable=self.vars["password"], show="•", font=(UI_FONT, fs(11)))
         self.password_entry.pack(side="left", fill="x", expand=True, ipady=7)
         ttk.Button(password_row, text="Показать", style="Soft.TButton", command=self._toggle_password).pack(side="left", padx=(7, 0))
         ttk.Button(password_row, text="Создать", style="Soft.TButton", command=self._generate).pack(side="left", padx=(7, 0))
 
         self._field(body, "Сайт / URL", "url")
-        tk.Label(body, text="Категория", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(9, 5))
-        category = ttk.Combobox(body, textvariable=self.vars["category"], values=app.store.list_categories(), state="readonly", font=("Segoe UI", 10))
+        tk.Label(body, text="Категория", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(9, 5))
+        category = ttk.Combobox(body, textvariable=self.vars["category"], values=app.store.list_categories(), state="readonly", font=(UI_FONT, fs(10)))
         category.pack(fill="x", ipady=5)
 
-        tk.Label(body, text="Заметка", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(9, 5))
-        self.notes = tk.Text(body, height=4, wrap="word", relief="solid", bd=1, highlightthickness=0, font=("Segoe UI", 10), padx=8, pady=7)
+        tk.Label(body, text="Заметка", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(9, 5))
+        self.notes = tk.Text(body, height=4, wrap="word", relief="flat", bd=0, highlightthickness=1, highlightbackground=COLORS["line"], highlightcolor=COLORS["accent"], bg="#F8FAFC", fg=COLORS["text"], insertbackground=COLORS["text"], selectbackground="#DADCFF", selectforeground=COLORS["text"], font=(UI_FONT, fs(10)), padx=8, pady=7)
         self.notes.pack(fill="x")
         self.notes.insert("1.0", data.get("notes", ""))
 
@@ -109,10 +133,11 @@ class EntryDialog(tk.Toplevel):
         ttk.Button(actions, text="Сохранить", style="Accent.TButton", command=self._save).pack(side="right", padx=(0, 9))
         self.bind("<Escape>", lambda _e: self.destroy())
         self.bind("<Control-Return>", lambda _e: self._save())
+        fit_window(self, 590, 650)
 
     def _field(self, parent: tk.Widget, label: str, key: str) -> None:
-        tk.Label(parent, text=label, bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(9, 5))
-        widget = ttk.Entry(parent, textvariable=self.vars[key], font=("Segoe UI", 11))
+        tk.Label(parent, text=label, bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(9, 5))
+        widget = ttk.Entry(parent, textvariable=self.vars[key], font=(UI_FONT, fs(11)))
         widget.pack(fill="x", ipady=7)
         if key == "title":
             widget.focus_set()
@@ -148,6 +173,7 @@ class PasswordVaultApp:
         self.root.minsize(980, 640)
         center_window(self.root, 1180, 740)
         self.root.configure(bg=COLORS["bg"])
+        self._set_icon()
         self.store = VaultStore(app_data_dir() / "vault.db")
         self.active_category = "Все записи"
         self.search_var = tk.StringVar()
@@ -165,20 +191,32 @@ class PasswordVaultApp:
         else:
             self.show_setup()
 
+    def _set_icon(self) -> None:
+        icon = resource_path("assets/icon.png")
+        if icon.exists():
+            try:
+                self._icon_image = tk.PhotoImage(file=str(icon))
+                self.root.iconphoto(True, self._icon_image)
+            except tk.TclError:
+                pass
+
     def _build_styles(self) -> None:
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("TEntry", fieldbackground="#F8FAFC", bordercolor=COLORS["line"], lightcolor=COLORS["line"], darkcolor=COLORS["line"], padding=7)
-        style.configure("TCombobox", fieldbackground="#F8FAFC", padding=6)
-        style.configure("Accent.TButton", background=COLORS["accent"], foreground="white", borderwidth=0, padding=(16, 10), font=("Segoe UI", 10, "bold"))
-        style.map("Accent.TButton", background=[("active", COLORS["accent_hover"])])
-        style.configure("Soft.TButton", background="#EEF0FF", foreground=COLORS["accent"], borderwidth=0, padding=(12, 9), font=("Segoe UI", 9, "bold"))
-        style.map("Soft.TButton", background=[("active", "#E1E4FF")])
-        style.configure("Danger.TButton", background="#FFF0F2", foreground=COLORS["danger"], borderwidth=0, padding=(10, 8), font=("Segoe UI", 9, "bold"))
-        style.map("Danger.TButton", background=[("active", "#FFE1E6")])
+        style.configure("TCheckbutton", background=COLORS["card"], foreground=COLORS["text"], font=(UI_FONT, fs(10)))
+        style.map("TCheckbutton", background=[("active", COLORS["card"])], indicatorbackground=[("selected", COLORS["accent"]), ("!selected", "white")])
+        style.configure("TEntry", foreground=COLORS["text"], insertcolor=COLORS["text"], fieldbackground="#F8FAFC", bordercolor=COLORS["line"], lightcolor=COLORS["line"], darkcolor=COLORS["line"], padding=7)
+        style.configure("TCombobox", foreground=COLORS["text"], fieldbackground="#F8FAFC", padding=6)
+        style.map("TCombobox", fieldbackground=[("readonly", "#F8FAFC")], foreground=[("readonly", COLORS["text"])], selectbackground=[("readonly", "#F8FAFC")], selectforeground=[("readonly", COLORS["text"])])
+        style.configure("Accent.TButton", background=COLORS["accent"], foreground="white", borderwidth=0, padding=(16, 10), font=(UI_FONT, fs(10), "bold"))
+        style.map("Accent.TButton", background=[("pressed", "#3D41C9"), ("active", COLORS["accent_hover"])], foreground=[("disabled", "#C7C9F9"), ("!disabled", "white")])
+        style.configure("Soft.TButton", background="#EEF0FF", foreground=COLORS["accent"], borderwidth=0, padding=(12, 9), font=(UI_FONT, fs(9), "bold"))
+        style.map("Soft.TButton", background=[("pressed", "#D3D7FF"), ("active", "#E1E4FF")], foreground=[("!disabled", COLORS["accent"])])
+        style.configure("Danger.TButton", background="#FFF0F2", foreground=COLORS["danger"], borderwidth=0, padding=(10, 8), font=(UI_FONT, fs(9), "bold"))
+        style.map("Danger.TButton", background=[("pressed", "#FFD2DA"), ("active", "#FFE1E6")], foreground=[("!disabled", COLORS["danger"])])
 
     def clear(self) -> None:
         for child in self.root.winfo_children():
@@ -190,9 +228,9 @@ class PasswordVaultApp:
         outer.pack(fill="both", expand=True)
         panel = tk.Frame(outer, bg=COLORS["card"], padx=46, pady=40, highlightbackground=COLORS["line"], highlightthickness=1)
         panel.place(relx=.5, rely=.5, anchor="center", width=480)
-        tk.Label(panel, text="◆", bg=COLORS["card"], fg=COLORS["accent"], font=("Segoe UI Symbol", 32, "bold")).pack()
-        tk.Label(panel, text=title, bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 23, "bold")).pack(pady=(12, 5))
-        tk.Label(panel, text=subtitle, bg=COLORS["card"], fg=COLORS["muted"], font=("Segoe UI", 10), wraplength=370, justify="center").pack(pady=(0, 24))
+        tk.Label(panel, text="◆", bg=COLORS["card"], fg=COLORS["accent"], font=(SYMBOL_FONT, fs(32), "bold")).pack()
+        tk.Label(panel, text=title, bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(23), "bold")).pack(pady=(12, 5))
+        tk.Label(panel, text=subtitle, bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(10)), wraplength=370, justify="center").pack(pady=(0, 24))
         return panel
 
     def show_setup(self) -> None:
@@ -216,8 +254,8 @@ class PasswordVaultApp:
         ttk.Button(panel, text="Создать защищённое хранилище", style="Accent.TButton", command=create).pack(fill="x", pady=(22, 0))
 
     def _labeled_auth_entry(self, parent: tk.Widget, label: str, variable: tk.StringVar) -> ttk.Entry:
-        tk.Label(parent, text=label, bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(9, 5))
-        entry = ttk.Entry(parent, textvariable=variable, show="•", font=("Segoe UI", 12))
+        tk.Label(parent, text=label, bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(9, 5))
+        entry = ttk.Entry(parent, textvariable=variable, show="•", font=(UI_FONT, fs(12)))
         entry.pack(fill="x", ipady=7)
         return entry
 
@@ -226,7 +264,7 @@ class PasswordVaultApp:
         panel = self._auth_shell("Password Vault", reason or "Введите мастер-пароль, чтобы открыть локальное хранилище.")
         password = tk.StringVar()
         entry = self._labeled_auth_entry(panel, "Мастер-пароль", password)
-        status = tk.Label(panel, text="", bg=COLORS["card"], fg=COLORS["danger"], font=("Segoe UI", 9))
+        status = tk.Label(panel, text="", bg=COLORS["card"], fg=COLORS["danger"], font=(UI_FONT, fs(9)))
         status.pack(anchor="w", pady=(8, 0))
 
         def unlock() -> None:
@@ -263,11 +301,11 @@ class PasswordVaultApp:
             child.destroy()
         brand = tk.Frame(self.sidebar, bg=COLORS["nav"], padx=20, pady=24)
         brand.pack(fill="x")
-        tk.Label(brand, text="◆  VAULT", bg=COLORS["nav"], fg="white", font=("Segoe UI", 16, "bold")).pack(anchor="w")
-        tk.Label(brand, text="LOCAL · ENCRYPTED", bg=COLORS["nav"], fg="#8290A7", font=("Segoe UI", 8, "bold")).pack(anchor="w", pady=(3, 0))
+        tk.Label(brand, text="◆  VAULT", bg=COLORS["nav"], fg="white", font=(UI_FONT, fs(16), "bold")).pack(anchor="w")
+        tk.Label(brand, text="LOCAL · ENCRYPTED", bg=COLORS["nav"], fg="#8290A7", font=(UI_FONT, fs(8), "bold")).pack(anchor="w", pady=(3, 0))
         self._nav_button("Все записи", "▦", lambda: self._select_category("Все записи"))
         self._nav_button("Избранное", "★", lambda: self._select_category("Избранное"))
-        tk.Label(self.sidebar, text="КАТЕГОРИИ", bg=COLORS["nav"], fg="#748198", font=("Segoe UI", 8, "bold"), padx=20, pady=12).pack(fill="x", anchor="w")
+        tk.Label(self.sidebar, text="КАТЕГОРИИ", bg=COLORS["nav"], fg="#748198", font=(UI_FONT, fs(8), "bold"), padx=20, pady=12).pack(fill="x", anchor="w")
         for category in self.store.list_categories():
             self._nav_button(category, "•", lambda c=category: self._select_category(c))
         self._nav_button("Новая категория", "+", self._add_category, muted=True)
@@ -276,13 +314,19 @@ class PasswordVaultApp:
         self._nav_button("Резервная копия", "↥", self._backup_menu)
         self._nav_button("Настройки", "⚙", self._settings)
         self._nav_button("Заблокировать", "◉", lambda: self.show_unlock("Хранилище заблокировано вручную."))
-        tk.Label(self.sidebar, text="v0.2 · база хранится локально", bg=COLORS["nav"], fg="#667085", font=("Segoe UI", 8), pady=14).pack()
+        tk.Label(self.sidebar, text="v0.2 · база хранится локально", bg=COLORS["nav"], fg="#667085", font=(UI_FONT, fs(8)), pady=14).pack()
 
     def _nav_button(self, text: str, icon: str, command, muted: bool = False) -> None:
         selected = text == self.active_category
         bg = COLORS["accent"] if selected else COLORS["nav"]
         fg = "#9AA7BA" if muted else "white"
-        button = tk.Button(self.sidebar, text=f"  {icon}   {text}", command=command, anchor="w", bg=bg, activebackground=COLORS["nav_hover"] if not selected else COLORS["accent_hover"], fg=fg, activeforeground="white", bd=0, relief="flat", padx=17, pady=9, font=("Segoe UI", 10, "bold" if selected else "normal"), cursor="hand2")
+        hover = COLORS["accent_hover"] if selected else COLORS["nav_hover"]
+        # tk.Label instead of tk.Button: on macOS native buttons ignore bg/fg,
+        # which made light text unreadable on a light system button.
+        button = tk.Label(self.sidebar, text=f"  {icon}   {text}", anchor="w", bg=bg, fg=fg, padx=17, pady=9, font=(UI_FONT, fs(10), "bold" if selected else "normal"), cursor="hand2")
+        button.bind("<Enter>", lambda _e: button.configure(bg=hover, fg="white"))
+        button.bind("<Leave>", lambda _e: button.configure(bg=bg, fg=fg))
+        button.bind("<ButtonRelease-1>", lambda _e: command())
         button.pack(fill="x", padx=10, pady=1)
 
     def _render_content(self) -> None:
@@ -292,14 +336,14 @@ class PasswordVaultApp:
         header.pack(fill="x")
         left = tk.Frame(header, bg=COLORS["bg"])
         left.pack(side="left")
-        tk.Label(left, text=self.active_category, bg=COLORS["bg"], fg=COLORS["text"], font=("Segoe UI", 22, "bold")).pack(anchor="w")
-        self.count_label = tk.Label(left, text="", bg=COLORS["bg"], fg=COLORS["muted"], font=("Segoe UI", 9))
+        tk.Label(left, text=self.active_category, bg=COLORS["bg"], fg=COLORS["text"], font=(UI_FONT, fs(22), "bold")).pack(anchor="w")
+        self.count_label = tk.Label(left, text="", bg=COLORS["bg"], fg=COLORS["muted"], font=(UI_FONT, fs(9)))
         self.count_label.pack(anchor="w", pady=(3, 0))
         ttk.Button(header, text="+  Новая запись", style="Accent.TButton", command=self._new_entry).pack(side="right")
         search_frame = tk.Frame(header, bg=COLORS["card"], highlightbackground=COLORS["line"], highlightthickness=1)
         search_frame.pack(side="right", padx=(0, 12))
-        tk.Label(search_frame, text="⌕", bg=COLORS["card"], fg=COLORS["muted"], font=("Segoe UI Symbol", 16), padx=10).pack(side="left")
-        search = tk.Entry(search_frame, textvariable=self.search_var, bd=0, relief="flat", bg=COLORS["card"], fg=COLORS["text"], insertbackground=COLORS["text"], font=("Segoe UI", 10), width=27)
+        tk.Label(search_frame, text="⌕", bg=COLORS["card"], fg=COLORS["muted"], font=(SYMBOL_FONT, fs(16)), padx=10).pack(side="left")
+        search = tk.Entry(search_frame, textvariable=self.search_var, bd=0, relief="flat", bg=COLORS["card"], fg=COLORS["text"], insertbackground=COLORS["text"], font=(UI_FONT, fs(10)), width=27)
         search.pack(side="left", ipady=10, padx=(0, 10))
         self.cards_canvas = tk.Canvas(self.content, bg=COLORS["bg"], bd=0, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.content, orient="vertical", command=self.cards_canvas.yview)
@@ -314,7 +358,9 @@ class PasswordVaultApp:
 
     def _mousewheel(self, event: tk.Event) -> None:
         if hasattr(self, "cards_canvas") and self.cards_canvas.winfo_exists():
-            self.cards_canvas.yview_scroll(int(-event.delta / 120), "units")
+            step = -event.delta if sys.platform == "darwin" else int(-event.delta / 120)
+            if step:
+                self.cards_canvas.yview_scroll(step, "units")
 
     def _filtered_entries(self) -> list[dict]:
         entries = self.store.list_entries()
@@ -340,9 +386,9 @@ class PasswordVaultApp:
         if not entries:
             empty = tk.Frame(self.cards_frame, bg=COLORS["card"], padx=30, pady=55, highlightbackground=COLORS["line"], highlightthickness=1)
             empty.pack(fill="x", pady=(8, 0))
-            tk.Label(empty, text="◇", bg=COLORS["card"], fg=COLORS["accent"], font=("Segoe UI Symbol", 34)).pack()
-            tk.Label(empty, text="Здесь пока пусто", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 15, "bold")).pack(pady=(8, 2))
-            tk.Label(empty, text="Добавьте первую запись или измените фильтр поиска", bg=COLORS["card"], fg=COLORS["muted"], font=("Segoe UI", 10)).pack()
+            tk.Label(empty, text="◇", bg=COLORS["card"], fg=COLORS["accent"], font=(SYMBOL_FONT, fs(34))).pack()
+            tk.Label(empty, text="Здесь пока пусто", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(15), "bold")).pack(pady=(8, 2))
+            tk.Label(empty, text="Добавьте первую запись или измените фильтр поиска", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(10))).pack()
             return
         for entry in entries:
             self._entry_card(entry)
@@ -350,17 +396,17 @@ class PasswordVaultApp:
     def _entry_card(self, entry: dict) -> None:
         card = tk.Frame(self.cards_frame, bg=COLORS["card"], padx=18, pady=14, highlightbackground=COLORS["line"], highlightthickness=1)
         card.pack(fill="x", pady=6)
-        icon = tk.Label(card, text=(entry.get("title", "?")[:1] or "?").upper(), bg="#EEF0FF", fg=COLORS["accent"], font=("Segoe UI", 15, "bold"), width=3, height=2)
+        icon = tk.Label(card, text=(entry.get("title", "?")[:1] or "?").upper(), bg="#EEF0FF", fg=COLORS["accent"], font=(UI_FONT, fs(15), "bold"), width=3, height=2)
         icon.pack(side="left", padx=(0, 14))
         info = tk.Frame(card, bg=COLORS["card"])
         info.pack(side="left", fill="x", expand=True)
         title_row = tk.Frame(info, bg=COLORS["card"])
         title_row.pack(fill="x")
-        tk.Label(title_row, text=entry.get("title", ""), bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 11, "bold")).pack(side="left")
+        tk.Label(title_row, text=entry.get("title", ""), bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(11), "bold")).pack(side="left")
         if entry.get("favorite"):
-            tk.Label(title_row, text="★", bg=COLORS["card"], fg="#E3A008", font=("Segoe UI", 10)).pack(side="left", padx=7)
+            tk.Label(title_row, text="★", bg=COLORS["card"], fg="#E3A008", font=(UI_FONT, fs(10))).pack(side="left", padx=7)
         detail = entry.get("username") or entry.get("url") or "Без логина"
-        tk.Label(info, text=f"{detail}   ·   {entry.get('category', 'Другое')}", bg=COLORS["card"], fg=COLORS["muted"], font=("Segoe UI", 9)).pack(anchor="w", pady=(4, 0))
+        tk.Label(info, text=f"{detail}   ·   {entry.get('category', 'Другое')}", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(9))).pack(anchor="w", pady=(4, 0))
         ttk.Button(card, text="Удалить", style="Danger.TButton", command=lambda: self._delete_entry(entry)).pack(side="right", padx=(7, 0))
         ttk.Button(card, text="Изменить", style="Soft.TButton", command=lambda: self._edit_entry(entry)).pack(side="right", padx=(7, 0))
         ttk.Button(card, text="Пароль", style="Soft.TButton", command=lambda: self._copy(entry.get("password", ""), "Пароль")).pack(side="right", padx=(7, 0))
@@ -476,11 +522,11 @@ class PasswordVaultApp:
         window.grab_set()
         body = tk.Frame(window, bg=COLORS["card"], padx=30, pady=28)
         body.pack(fill="both", expand=True)
-        tk.Label(body, text="Настройки безопасности", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        tk.Label(body, text="Автоблокировка после бездействия", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(22, 6))
+        tk.Label(body, text="Настройки безопасности", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(18), "bold")).pack(anchor="w")
+        tk.Label(body, text="Автоблокировка после бездействия", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(22, 6))
         auto = tk.StringVar(value=self.store.get_preference("auto_lock_minutes", "5"))
         ttk.Combobox(body, textvariable=auto, values=("1", "3", "5", "10", "15", "30"), state="readonly").pack(fill="x")
-        tk.Label(body, text="Очистка буфера обмена, секунд", bg=COLORS["card"], fg=COLORS["text"], font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(16, 6))
+        tk.Label(body, text="Очистка буфера обмена, секунд", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(10), "bold")).pack(anchor="w", pady=(16, 6))
         clip = tk.StringVar(value=self.store.get_preference("clipboard_seconds", "30"))
         ttk.Combobox(body, textvariable=clip, values=("10", "20", "30", "45", "60"), state="readonly").pack(fill="x")
 
@@ -492,6 +538,7 @@ class PasswordVaultApp:
 
         ttk.Button(body, text="Сменить мастер-пароль", style="Soft.TButton", command=lambda: self._change_password(window)).pack(fill="x", pady=(22, 8))
         ttk.Button(body, text="Сохранить настройки", style="Accent.TButton", command=save).pack(fill="x")
+        fit_window(window, 470, 390)
 
     def _change_password(self, parent: tk.Misc) -> None:
         current = simpledialog.askstring(APP_NAME, "Текущий мастер-пароль:", show="•", parent=parent)
