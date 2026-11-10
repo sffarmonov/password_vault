@@ -12,6 +12,8 @@ if (-not (Test-Path ".venv")) {
     --onefile `
     --windowed `
     --name "PasswordVault" `
+    --icon assets\icon.ico `
+    --add-data "assets\icon.png;assets" `
     app.py
 
 Write-Host "Готово: dist\PasswordVault.exe" -ForegroundColor Green
