@@ -1,2 +1,4 @@
 cryptography>=46.0.0,<47
-
+# Touch ID (только macOS)
+keyring>=25; sys_platform == "darwin"
+pyobjc-framework-LocalAuthentication>=10; sys_platform == "darwin"

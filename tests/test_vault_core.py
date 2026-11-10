@@ -90,3 +90,28 @@ class VaultStoreTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+class KeyUnlockTests(unittest.TestCase):
+    def test_unlock_with_exported_key(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = VaultStore(Path(folder) / "vault.db", kdf_config=TEST_KDF)
+            store.setup_master_password("correct horse battery staple")
+            key = store.export_key()
+            store.lock()
+            store.unlock_with_key(key)
+            self.assertTrue(store.is_unlocked)
+            store.lock()
+            with self.assertRaises(InvalidMasterPassword):
+                store.unlock_with_key(b"\x00" * 32)
+            self.assertFalse(store.is_unlocked)
+
+    def test_old_key_rejected_after_master_change(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = VaultStore(Path(folder) / "vault.db", kdf_config=TEST_KDF)
+            store.setup_master_password("correct horse battery staple")
+            old_key = store.export_key()
+            store.change_master_password("correct horse battery staple", "another long password!")
+            store.lock()
+            with self.assertRaises(InvalidMasterPassword):
+                store.unlock_with_key(old_key)
