@@ -9,6 +9,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import biometric
 from vault_core import (
     InvalidMasterPassword,
     VaultError,
@@ -284,6 +285,27 @@ class PasswordVaultApp:
         entry.bind("<Return>", lambda _e: unlock())
         entry.focus_set()
 
+        if biometric.is_available() and biometric.is_enabled(self.store.db_path):
+            def touch_unlock() -> None:
+                if not biometric.authenticate("открыть хранилище Password Vault"):
+                    status.configure(text="Touch ID не подтверждён. Введите мастер-пароль.")
+                    entry.focus_set()
+                    return
+                key = biometric.load_key(self.store.db_path)
+                try:
+                    if key is None:
+                        raise InvalidMasterPassword("Ключ не найден")
+                    self.store.unlock_with_key(key)
+                except InvalidMasterPassword:
+                    biometric.disable(self.store.db_path)
+                    status.configure(text="Ключ Touch ID устарел и отключён. Введите мастер-пароль.")
+                    entry.focus_set()
+                    return
+                self.last_activity = time.monotonic()
+                self.show_main()
+
+            ttk.Button(panel, text="Войти по Touch ID", style="Soft.TButton", command=touch_unlock).pack(fill="x", pady=(8, 0))
+
     def show_main(self) -> None:
         self.clear()
         shell = tk.Frame(self.root, bg=COLORS["bg"])
@@ -533,8 +555,26 @@ class PasswordVaultApp:
         def save() -> None:
             self.store.set_preference("auto_lock_minutes", auto.get())
             self.store.set_preference("clipboard_seconds", clip.get())
+            if biometric.is_available():
+                was_enabled = biometric.is_enabled(self.store.db_path)
+                if touch_id.get() and not was_enabled:
+                    if not biometric.authenticate("включить вход по Touch ID в Password Vault"):
+                        messagebox.showwarning(APP_NAME, "Touch ID не подтверждён, вход по отпечатку не включён.", parent=window)
+                        return
+                    try:
+                        biometric.store_key(self.store.db_path, self.store.export_key())
+                    except Exception as exc:
+                        messagebox.showerror(APP_NAME, f"Не удалось сохранить ключ в Связку ключей:\n{exc}", parent=window)
+                        return
+                elif not touch_id.get() and was_enabled:
+                    biometric.disable(self.store.db_path)
             self.last_activity = time.monotonic()
             window.destroy()
+
+        touch_id = tk.BooleanVar(value=biometric.is_enabled(self.store.db_path))
+        if biometric.is_available():
+            ttk.Checkbutton(body, text="Вход по Touch ID", variable=touch_id).pack(anchor="w", pady=(16, 0))
+            tk.Label(body, text="Ключ хранилища сохраняется в Связке ключей macOS\nи выдаётся только после отпечатка пальца.", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(9)), justify="left").pack(anchor="w", pady=(2, 0))
 
         ttk.Button(body, text="Сменить мастер-пароль", style="Soft.TButton", command=lambda: self._change_password(window)).pack(fill="x", pady=(22, 8))
         ttk.Button(body, text="Сохранить настройки", style="Accent.TButton", command=save).pack(fill="x")
@@ -553,6 +593,8 @@ class PasswordVaultApp:
             return
         try:
             self.store.change_master_password(current, new)
+            if biometric.is_enabled(self.store.db_path):
+                biometric.store_key(self.store.db_path, self.store.export_key())
             self.last_activity = time.monotonic()
             messagebox.showinfo(APP_NAME, "Мастер-пароль изменён. Старые резервные копии открываются старым паролем.", parent=parent)
         except VaultError as exc:

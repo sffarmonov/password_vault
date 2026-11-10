@@ -16,6 +16,8 @@ fi
     --name "Password Vault" \
     --icon assets/icon.icns \
     --add-data "assets/icon.png:assets" \
+    --hidden-import keyring.backends.macOS \
+    --collect-submodules LocalAuthentication \
     --osx-bundle-identifier "local.passwordvault" \
     app.py
 

@@ -244,6 +244,20 @@ class VaultStore:
             raise InvalidMasterPassword("Неверный мастер-пароль.") from exc
         self._key = key
 
+    def unlock_with_key(self, key: bytes) -> None:
+        """Unlock with a previously exported key (used for Touch ID)."""
+        try:
+            with self._connect() as connection:
+                check = self._meta(connection, "master_check")
+            if self._decrypt_bytes(key, check, b"master-check-v2") != CHECK_VALUE:
+                raise InvalidMasterPassword("Сохранённый ключ не подходит.")
+        except (InvalidTag, ValueError) as exc:
+            raise InvalidMasterPassword("Сохранённый ключ не подходит.") from exc
+        self._key = key
+
+    def export_key(self) -> bytes:
+        return self._require_key()
+
     def lock(self) -> None:
         self._key = None
 
