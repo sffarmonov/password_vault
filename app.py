@@ -10,6 +10,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import biometric
+import xlsx_io
 from vault_core import (
     InvalidMasterPassword,
     VaultError,
@@ -334,6 +335,7 @@ class PasswordVaultApp:
         spacer = tk.Frame(self.sidebar, bg=COLORS["nav"])
         spacer.pack(fill="both", expand=True)
         self._nav_button("Резервная копия", "↥", self._backup_menu)
+        self._nav_button("Excel: экспорт / импорт", "▤", self._excel_menu)
         self._nav_button("Настройки", "⚙", self._settings)
         self._nav_button("Заблокировать", "◉", lambda: self.show_unlock("Хранилище заблокировано вручную."))
         tk.Label(self.sidebar, text="v0.2 · база хранится локально", bg=COLORS["nav"], fg="#667085", font=(UI_FONT, fs(8)), pady=14).pack()
@@ -505,6 +507,85 @@ class PasswordVaultApp:
             self._create_backup()
         elif answer is False:
             self._restore_backup()
+
+    def _excel_menu(self) -> None:
+        answer = messagebox.askyesnocancel(APP_NAME, "Да — экспортировать записи в Excel (.xlsx)\nНет — импортировать записи из Excel\nОтмена — закрыть")
+        if answer is True:
+            self._export_xlsx()
+        elif answer is False:
+            self._import_xlsx()
+
+    def _export_xlsx(self) -> None:
+        entries = self.store.list_entries()
+        if not entries:
+            messagebox.showinfo(APP_NAME, "Нет записей для экспорта.")
+            return
+        if not messagebox.askokcancel(
+            APP_NAME,
+            "Файл Excel НЕ зашифрован: любой, кто его откроет, увидит все логины и пароли.\n\n"
+            "Храните его в надёжном месте и удалите, когда он станет не нужен.",
+            icon="warning",
+        ):
+            return
+        password = simpledialog.askstring(APP_NAME, "Для экспорта подтвердите мастер-пароль:", show="•", parent=self.root)
+        if password is None:
+            return
+        try:
+            self.store.unlock(password)
+        except InvalidMasterPassword:
+            messagebox.showerror(APP_NAME, "Неверный мастер-пароль. Экспорт отменён.")
+            return
+        default = f"password-vault-{datetime.now():%Y-%m-%d_%H-%M}.xlsx"
+        path = filedialog.asksaveasfilename(title="Экспорт в Excel", defaultextension=".xlsx", initialfile=default, filetypes=[("Excel", "*.xlsx")])
+        if not path:
+            return
+        try:
+            xlsx_io.export_entries(entries, path)
+            messagebox.showinfo(APP_NAME, f"Экспортировано записей: {len(entries)}\n{path}")
+        except OSError as exc:
+            messagebox.showerror(APP_NAME, f"Не удалось сохранить файл:\n{exc}")
+
+    def _import_xlsx(self) -> None:
+        path = filedialog.askopenfilename(title="Импорт из Excel", filetypes=[("Excel", "*.xlsx"), ("Все файлы", "*.*")])
+        if not path:
+            return
+        try:
+            rows = xlsx_io.read_entries(path)
+        except xlsx_io.XlsxImportError as exc:
+            messagebox.showerror(APP_NAME, str(exc))
+            return
+        existing = {
+            (e.get("title", "").casefold(), e.get("username", "").casefold(), e.get("url", "").casefold())
+            for e in self.store.list_entries()
+        }
+        new_rows, duplicates = [], 0
+        for row in rows:
+            signature = (row["title"].casefold(), row.get("username", "").casefold(), row.get("url", "").casefold())
+            if signature in existing:
+                duplicates += 1
+                continue
+            existing.add(signature)
+            new_rows.append(row)
+        if not new_rows:
+            messagebox.showinfo(APP_NAME, f"Новых записей не найдено.\nСтрок в файле: {len(rows)}, уже есть в хранилище: {duplicates}.")
+            return
+        if not messagebox.askokcancel(APP_NAME, f"Будет добавлено записей: {len(new_rows)}\nПропущено дубликатов: {duplicates}\n\nСуществующие записи не изменятся."):
+            return
+        known = {c.casefold(): c for c in self.store.list_categories()}
+        imported = 0
+        for row in new_rows:
+            category = " ".join(row.get("category", "").split())
+            if not category or len(category) > 40:
+                category = "Другое"
+            elif category.casefold() not in known:
+                self.store.add_category(category)
+                known[category.casefold()] = category
+            row["category"] = known[category.casefold()]
+            self.store.add_entry(row)
+            imported += 1
+        self.active_category = "Все записи"
+        self.show_main()
+        messagebox.showinfo(APP_NAME, f"Импортировано записей: {imported}\nПропущено дубликатов: {duplicates}")
 
     def _create_backup(self) -> None:
         default = f"password-vault-{datetime.now():%Y-%m-%d_%H-%M}.pvbackup"
