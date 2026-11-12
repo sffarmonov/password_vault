@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="" width="22" height="22">
+    <div>
+      <div class="title">Password Vault</div>
+      <div class="host" id="host"></div>
+    </div>
+  </header>
+  <div id="warning" class="warning" hidden>
+    Сайт открыт по незащищённому протоколу http. Пароль может быть перехвачен.
+    Нажмите на запись ещё раз, чтобы всё равно заполнить.
+  </div>
+  <main id="content"><div class="muted">Загрузка…</div></main>
+  <footer id="status"></footer>
+  <script src="popup.js"></script>
+</body>
+</html>

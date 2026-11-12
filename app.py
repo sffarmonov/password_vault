@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import webbrowser
 from datetime import datetime
@@ -10,6 +11,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import biometric
+import browser_server
 import xlsx_io
 from vault_core import (
     InvalidMasterPassword,
@@ -20,6 +22,9 @@ from vault_core import (
 
 
 APP_NAME = "Password Vault 0.2"
+# After the master password or Touch ID is confirmed, browser autofill works
+# without another fingerprint for this many seconds.
+BROWSER_TRUST_SECONDS = 5 * 60
 
 # Tk on macOS draws font points at 72 dpi (Windows uses 96), so the same size
 # looks about a quarter smaller there; scale it up to keep text readable.
@@ -182,6 +187,10 @@ class PasswordVaultApp:
         self.search_var.trace_add("write", lambda *_: self._render_cards())
         self.last_activity = time.monotonic()
         self.clipboard_value: str | None = None
+        self.last_auth = 0.0  # time.monotonic() of the last master password / Touch ID confirmation
+        self._auth_lock = threading.Lock()
+        self.browser = browser_server.BrowserServer(app_data_dir() / "browser.sock", self._handle_browser_request)
+        self.browser.start()
         self._build_styles()
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self.root.bind_all("<KeyPress>", self._activity, add="+")
@@ -248,6 +257,7 @@ class PasswordVaultApp:
                 return
             try:
                 self.store.setup_master_password(first.get())
+                self.last_auth = time.monotonic()
                 self.last_activity = time.monotonic()
                 self.show_main()
             except VaultError as exc:
@@ -263,6 +273,7 @@ class PasswordVaultApp:
 
     def show_unlock(self, reason: str | None = None) -> None:
         self.store.lock()
+        self.last_auth = 0.0
         panel = self._auth_shell("Password Vault", reason or "Введите мастер-пароль, чтобы открыть локальное хранилище.")
         password = tk.StringVar()
         entry = self._labeled_auth_entry(panel, "Мастер-пароль", password)
@@ -273,7 +284,7 @@ class PasswordVaultApp:
             try:
                 self.store.unlock(password.get())
                 password.set("")
-                self.last_activity = time.monotonic()
+                self.last_activity = self.last_auth = time.monotonic()
                 self.show_main()
             except InvalidMasterPassword:
                 status.configure(text="Неверный мастер-пароль")
@@ -302,7 +313,7 @@ class PasswordVaultApp:
                     status.configure(text="Ключ Touch ID устарел и отключён. Введите мастер-пароль.")
                     entry.focus_set()
                     return
-                self.last_activity = time.monotonic()
+                self.last_activity = self.last_auth = time.monotonic()
                 self.show_main()
 
             ttk.Button(panel, text="Войти по Touch ID", style="Soft.TButton", command=touch_unlock).pack(fill="x", pady=(8, 0))
@@ -636,6 +647,7 @@ class PasswordVaultApp:
         def save() -> None:
             self.store.set_preference("auto_lock_minutes", auto.get())
             self.store.set_preference("clipboard_seconds", clip.get())
+            self.store.set_preference("browser_fill", "1" if browser_fill.get() else "0")
             if biometric.is_available():
                 was_enabled = biometric.is_enabled(self.store.db_path)
                 if touch_id.get() and not was_enabled:
@@ -656,6 +668,11 @@ class PasswordVaultApp:
         if biometric.is_available():
             ttk.Checkbutton(body, text="Вход по Touch ID", variable=touch_id).pack(anchor="w", pady=(16, 0))
             tk.Label(body, text="Ключ хранилища сохраняется в Связке ключей macOS\nи выдаётся только после отпечатка пальца.", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(9)), justify="left").pack(anchor="w", pady=(2, 0))
+
+        browser_fill = tk.BooleanVar(value=self.store.get_preference("browser_fill", "1") == "1")
+        if browser_server.is_supported():
+            ttk.Checkbutton(body, text="Заполнение логинов в браузере", variable=browser_fill).pack(anchor="w", pady=(16, 0))
+            tk.Label(body, text="Через расширение Password Vault для Chromium-браузеров.\nTouch ID запрашивается, если вход был более 5 минут назад.", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(9)), justify="left").pack(anchor="w", pady=(2, 0))
 
         ttk.Button(body, text="Сменить мастер-пароль", style="Soft.TButton", command=lambda: self._change_password(window)).pack(fill="x", pady=(22, 8))
         ttk.Button(body, text="Сохранить настройки", style="Accent.TButton", command=save).pack(fill="x")
@@ -692,7 +709,53 @@ class PasswordVaultApp:
                 self.show_unlock(f"Автоблокировка после {minutes} мин. бездействия.")
         self.root.after(1000, self._auto_lock_tick)
 
+    # --- Browser extension -------------------------------------------------
+    # Called from the browser server thread: must not touch Tk widgets.
+
+    def _handle_browser_request(self, request: dict) -> dict:
+        command = request.get("cmd")
+        if command == "status":
+            return {"ok": True, "unlocked": self.store.is_unlocked}
+        if not self.store.is_unlocked:
+            return {"ok": False, "error": "locked"}
+        if self.store.get_preference("browser_fill", "1") != "1":
+            return {"ok": False, "error": "disabled"}
+        url = str(request.get("url", ""))
+        if command == "list":
+            matches = [
+                {"id": e["id"], "title": e.get("title", ""), "username": e.get("username", "")}
+                for e in self.store.list_entries()
+                if browser_server.site_matches(e.get("url", ""), url)
+            ]
+            return {"ok": True, "entries": matches, "insecure": url.lower().startswith("http://")}
+        if command == "credentials":
+            entry = next((e for e in self.store.list_entries() if e["id"] == request.get("id")), None)
+            if entry is None:
+                return {"ok": False, "error": "not_found"}
+            if not browser_server.site_matches(entry.get("url", ""), url):
+                return {"ok": False, "error": "site_mismatch"}
+            denied = self._confirm_browser_access(browser_server.host_of(url))
+            if denied:
+                return {"ok": False, "error": denied}
+            if not self.store.is_unlocked:  # locked while waiting for Touch ID
+                return {"ok": False, "error": "locked"}
+            return {"ok": True, "username": entry.get("username", ""), "password": entry.get("password", "")}
+        return {"ok": False, "error": "unknown_command"}
+
+    def _confirm_browser_access(self, host: str) -> str | None:
+        """None if access is allowed, otherwise an error code for the extension."""
+        with self._auth_lock:  # one Touch ID prompt at a time
+            if time.monotonic() - self.last_auth < BROWSER_TRUST_SECONDS:
+                return None
+            if not biometric.is_available():
+                return "reauth_required"
+            if not biometric.authenticate(f"заполнить логин на сайте {host}"):
+                return "touch_id_failed"
+            self.last_auth = time.monotonic()
+            return None
+
     def _close(self) -> None:
+        self.browser.stop()
         self.store.lock()
         if self.clipboard_value:
             self._clear_clipboard(self.clipboard_value)

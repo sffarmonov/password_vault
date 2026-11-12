@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Password Vault",
+  "version": "0.1.0",
+  "description": "Заполняет логин и пароль из локального приложения Password Vault.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAjNSGDJx/hzRBVqS7mKUtP6zKoRK8ya4DpMHBq6K/XYv98aoMhoj5REO9OkaG5Q3ff9GGi410cm0IjhmWNoNg9nAyXY8Qhdczw8Us/0Cl963P2Lcl9cMirJgEhkg0g+e1oOguJ+K9whRc4d2306qJyeR2CT9bElHbrjUA5z0Dx6Kq9vW5Fz7NvH3kxLXPfsikdv4nm98KGnzqCkrRCKDMDSOaS6VatPXBkl1vrt1Xm61kcg8QjGmP6uC4+C67BXRvFFgGriYeLl3hbfMhOTZI7g4XXDRdpUd+HK2bNCsBouW5KDNl+EZtd07BARfpEHg0zT52xCAMtzjVF8DVRR71FQIDAQAB",
+  "permissions": ["nativeMessaging", "activeTab", "scripting"],
+  "background": { "service_worker": "background.js" },
+  "action": {
+    "default_title": "Password Vault",
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+  },
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
+  "commands": {
+    "fill-login": {
+      "suggested_key": { "default": "Alt+Shift+L" },
+      "description": "Заполнить логин и пароль на текущем сайте"
+    }
+  }
+}
