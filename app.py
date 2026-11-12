@@ -11,6 +11,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import app_logging
 import biometric
 import browser_server
 import xlsx_io
@@ -107,6 +108,71 @@ def fit_window(window: tk.Misc, min_width: int, min_height: int) -> None:
     center_window(window, width, height)
 
 
+# --- Clipboard shortcuts ---------------------------------------------------
+# Tk binds ⌘V/⌘C/… (Ctrl on Windows) to the *letter* v/c/…, so with a Russian
+# keyboard layout the shortcut arrives as "м"/"с" and nothing happens. These
+# handlers map the physical key back to the edit action.
+EDIT_KEYSYMS = {
+    "Cyrillic_em": "<<Paste>>", "Cyrillic_EM": "<<Paste>>",
+    "Cyrillic_es": "<<Copy>>", "Cyrillic_ES": "<<Copy>>",
+    "Cyrillic_che": "<<Cut>>", "Cyrillic_CHE": "<<Cut>>",
+    "Cyrillic_ef": "<<SelectAll>>", "Cyrillic_EF": "<<SelectAll>>",
+    "Cyrillic_ya": "<<Undo>>", "Cyrillic_YA": "<<Undo>>",
+}
+# Physical key codes: macOS virtual key codes (Tk 8.6 aqua keeps them in the top
+# byte of keycode) and Windows virtual-key codes.
+MAC_EDIT_KEYCODES = {9: "<<Paste>>", 8: "<<Copy>>", 7: "<<Cut>>", 0: "<<SelectAll>>", 6: "<<Undo>>"}
+WIN_EDIT_KEYCODES = {86: "<<Paste>>", 67: "<<Copy>>", 88: "<<Cut>>", 65: "<<SelectAll>>", 90: "<<Undo>>"}
+EDIT_MODIFIER = "Command" if IS_MAC else "Control"
+TEXT_CLASSES = ("Entry", "TEntry", "TCombobox", "Text")
+
+
+def edit_action_for(keysym: str, keycode: int) -> str | None:
+    """Edit virtual event for ⌘/Ctrl + key on a non-Latin layout, else None."""
+    if keysym.lower() in {"a", "c", "v", "x", "z"}:
+        return None  # Latin layout: Tk's own class bindings already handle it
+    if keysym in EDIT_KEYSYMS:
+        return EDIT_KEYSYMS[keysym]
+    if IS_MAC:
+        return MAC_EDIT_KEYCODES.get(keycode >> 24)
+    if sys.platform == "win32":
+        return WIN_EDIT_KEYCODES.get(keycode)
+    return None
+
+
+def install_edit_bindings(root: tk.Tk) -> None:
+    def on_shortcut(event: tk.Event):
+        action = edit_action_for(event.keysym, event.keycode)
+        if action is None:
+            return None
+        event.widget.event_generate(action)
+        return "break"
+
+    def on_context_menu(event: tk.Event):
+        widget = event.widget
+        widget.focus_set()
+        menu = tk.Menu(widget, tearoff=False)
+        shortcut = "⌘" if IS_MAC else "Ctrl+"
+        for label, action, key in (("Вырезать", "<<Cut>>", "X"), ("Копировать", "<<Copy>>", "C"), ("Вставить", "<<Paste>>", "V")):
+            menu.add_command(label=label, accelerator=shortcut + key, command=lambda a=action: widget.event_generate(a))
+        menu.add_separator()
+        menu.add_command(label="Выделить всё", accelerator=shortcut + "A", command=lambda: widget.event_generate("<<SelectAll>>"))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return "break"
+
+    for class_name in TEXT_CLASSES:
+        root.bind_class(class_name, f"<{EDIT_MODIFIER}-KeyPress>", on_shortcut, add="+")
+        # Right click (Button-2 on macOS, Button-3 elsewhere) and Ctrl+click on macOS.
+        for sequence in ("<Button-2>", "<Button-3>") + (("<Control-Button-1>",) if IS_MAC else ()):
+            root.bind_class(class_name, sequence, on_context_menu, add="+")
+
+
+log = app_logging.logger
+
+
 class EntryDialog(tk.Toplevel):
     def __init__(self, app: "PasswordVaultApp", entry: dict | None = None) -> None:
         super().__init__(app.root)
@@ -199,7 +265,11 @@ class EntryDialog(tk.Toplevel):
 
 class PasswordVaultApp:
     def __init__(self) -> None:
+        self.log_path = app_logging.setup()
+        log.info("Запуск %s (Python %s, Tk %s)", APP_NAME, sys.version.split()[0], tk.TkVersion)
         self.root = tk.Tk()
+        self.root.report_callback_exception = self._report_error
+        install_edit_bindings(self.root)
         self.root.title(APP_NAME)
         self.root.minsize(980, 640)
         center_window(self.root, 1180, 740)
@@ -281,6 +351,7 @@ class PasswordVaultApp:
                 return
             try:
                 self.store.setup_master_password(first.get())
+                log.info("Хранилище создано")
                 self.last_auth = time.monotonic()
                 self.last_activity = time.monotonic()
                 self.show_main()
@@ -296,6 +367,8 @@ class PasswordVaultApp:
         return entry
 
     def show_unlock(self, reason: str | None = None) -> None:
+        if self.store.is_unlocked:
+            log.info("Хранилище заблокировано: %s", reason or "запуск")
         self.store.lock()
         self.last_auth = 0.0
         panel = self._auth_shell("Password Vault", reason or "Введите мастер-пароль, чтобы открыть локальное хранилище.")
@@ -308,9 +381,11 @@ class PasswordVaultApp:
             try:
                 self.store.unlock(password.get())
                 password.set("")
+                log.info("Разблокировано мастер-паролем")
                 self.last_activity = self.last_auth = time.monotonic()
                 self.show_main()
             except InvalidMasterPassword:
+                log.warning("Неверный мастер-пароль")
                 status.configure(text="Неверный мастер-пароль")
                 password.set("")
                 entry.focus_set()
@@ -324,6 +399,7 @@ class PasswordVaultApp:
         if biometric.is_available() and biometric.is_enabled(self.store.db_path):
             def touch_unlock() -> None:
                 if not biometric.authenticate("открыть хранилище Password Vault"):
+                    log.warning("Touch ID: вход не подтверждён")
                     status.configure(text="Touch ID не подтверждён. Введите мастер-пароль.")
                     entry.focus_set()
                     return
@@ -334,9 +410,11 @@ class PasswordVaultApp:
                     self.store.unlock_with_key(key)
                 except InvalidMasterPassword:
                     biometric.disable(self.store.db_path)
+                    log.warning("Touch ID: ключ устарел и отключён")
                     status.configure(text="Ключ Touch ID устарел и отключён. Введите мастер-пароль.")
                     entry.focus_set()
                     return
+                log.info("Разблокировано по Touch ID")
                 self.last_activity = self.last_auth = time.monotonic()
                 self.show_main()
 
@@ -372,6 +450,7 @@ class PasswordVaultApp:
         self._nav_button("Резервная копия", "↥", self._backup_menu)
         self._nav_button("Excel: экспорт / импорт", "▤", self._excel_menu)
         self._nav_button("Настройки", "⚙", self._settings)
+        self._nav_button("Журнал", "☰", self._show_log)
         self._nav_button("Заблокировать", "◉", lambda: self.show_unlock("Хранилище заблокировано вручную."))
         tk.Label(self.sidebar, text="v0.2 · база хранится локально", bg=COLORS["nav"], fg="#667085", font=(UI_FONT, fs(8)), pady=14).pack()
 
@@ -483,7 +562,8 @@ class PasswordVaultApp:
         self.root.wait_window(dialog)
         if dialog.result:
             try:
-                self.store.add_entry(dialog.result)
+                entry_id = self.store.add_entry(dialog.result)
+                log.info("Запись #%s добавлена", entry_id)
                 self._render_cards()
             except VaultError as exc:
                 messagebox.showerror(APP_NAME, str(exc))
@@ -494,6 +574,7 @@ class PasswordVaultApp:
         if dialog.result:
             try:
                 self.store.update_entry(entry["id"], dialog.result)
+                log.info("Запись #%s изменена", entry["id"])
                 self._render_cards()
             except VaultError as exc:
                 messagebox.showerror(APP_NAME, str(exc))
@@ -501,6 +582,7 @@ class PasswordVaultApp:
     def _delete_entry(self, entry: dict) -> None:
         if messagebox.askyesno(APP_NAME, f"Удалить «{entry.get('title', '')}» без возможности отмены?"):
             self.store.delete_entry(entry["id"])
+            log.info("Запись #%s удалена", entry["id"])
             self._render_cards()
 
     def _open_target(self, target: str) -> None:
@@ -509,6 +591,7 @@ class PasswordVaultApp:
         app_path = local_app_path(target)
         if app_path is not None:
             if not app_path.exists():
+                log.warning("Программа не найдена: %s", app_path)
                 messagebox.showerror(APP_NAME, f"Программа не найдена:\n{app_path}")
                 return
             try:
@@ -516,7 +599,9 @@ class PasswordVaultApp:
                     subprocess.Popen(["open", str(app_path)])
                 else:
                     os.startfile(str(app_path))  # type: ignore[attr-defined]  # Windows only
+                log.info("Запущена программа %s", app_path)
             except OSError as exc:
+                log.exception("Не удалось запустить %s", app_path)
                 messagebox.showerror(APP_NAME, f"Не удалось запустить программу:\n{exc}")
             return
         if looks_like_path(target):
@@ -597,8 +682,10 @@ class PasswordVaultApp:
             return
         try:
             xlsx_io.export_entries(entries, path)
+            log.info("Экспорт в Excel: %s записей", len(entries))
             messagebox.showinfo(APP_NAME, f"Экспортировано записей: {len(entries)}\n{path}")
         except OSError as exc:
+            log.exception("Экспорт в Excel не удался")
             messagebox.showerror(APP_NAME, f"Не удалось сохранить файл:\n{exc}")
 
     def _import_xlsx(self) -> None:
@@ -608,6 +695,7 @@ class PasswordVaultApp:
         try:
             rows = xlsx_io.read_entries(path)
         except xlsx_io.XlsxImportError as exc:
+            log.warning("Импорт из Excel отклонён: %s", exc)
             messagebox.showerror(APP_NAME, str(exc))
             return
         existing = {
@@ -639,6 +727,7 @@ class PasswordVaultApp:
             row["category"] = known[category.casefold()]
             self.store.add_entry(row)
             imported += 1
+        log.info("Импорт из Excel: добавлено %s, дубликатов %s", imported, duplicates)
         self.active_category = "Все записи"
         self.show_main()
         messagebox.showinfo(APP_NAME, f"Импортировано записей: {imported}\nПропущено дубликатов: {duplicates}")
@@ -650,8 +739,10 @@ class PasswordVaultApp:
             return
         try:
             self.store.create_backup(path)
+            log.info("Создана резервная копия")
             messagebox.showinfo(APP_NAME, "Зашифрованная резервная копия создана.")
         except (VaultError, OSError) as exc:
+            log.exception("Резервная копия не создана")
             messagebox.showerror(APP_NAME, f"Не удалось создать копию:\n{exc}")
 
     def _restore_backup(self) -> None:
@@ -665,10 +756,12 @@ class PasswordVaultApp:
             return
         try:
             count = self.store.restore_backup(path, password)
+            log.info("Восстановлено из резервной копии: %s записей", count)
             self.active_category = "Все записи"
             self.show_main()
             messagebox.showinfo(APP_NAME, f"Восстановлено записей: {count}")
         except (VaultError, OSError) as exc:
+            log.warning("Восстановление не удалось: %s", exc)
             messagebox.showerror(APP_NAME, f"Не удалось восстановить копию:\n{exc}")
 
     def _settings(self) -> None:
@@ -702,10 +795,14 @@ class PasswordVaultApp:
                     try:
                         biometric.store_key(self.store.db_path, self.store.export_key())
                     except Exception as exc:
+                        log.exception("Не удалось сохранить ключ Touch ID")
                         messagebox.showerror(APP_NAME, f"Не удалось сохранить ключ в Связку ключей:\n{exc}", parent=window)
                         return
+                    log.info("Вход по Touch ID включён")
                 elif not touch_id.get() and was_enabled:
                     biometric.disable(self.store.db_path)
+                    log.info("Вход по Touch ID выключен")
+            log.info("Настройки сохранены: автоблокировка %s мин, буфер %s с, браузер %s", auto.get(), clip.get(), "вкл" if browser_fill.get() else "выкл")
             self.last_activity = time.monotonic()
             window.destroy()
 
@@ -736,6 +833,7 @@ class PasswordVaultApp:
             return
         try:
             self.store.change_master_password(current, new)
+            log.info("Мастер-пароль изменён")
             if biometric.is_enabled(self.store.db_path):
                 biometric.store_key(self.store.db_path, self.store.export_key())
             self.last_activity = time.monotonic()
@@ -772,6 +870,7 @@ class PasswordVaultApp:
                 for e in self.store.list_entries()
                 if browser_server.site_matches(e.get("url", ""), url)
             ]
+            log.info("Браузер: список для %s — найдено %s", browser_server.host_of(url) or "?", len(matches))
             return {"ok": True, "entries": matches, "insecure": url.lower().startswith("http://")}
         if command == "credentials":
             entry = next((e for e in self.store.list_entries() if e["id"] == request.get("id")), None)
@@ -781,9 +880,11 @@ class PasswordVaultApp:
                 return {"ok": False, "error": "site_mismatch"}
             denied = self._confirm_browser_access(browser_server.host_of(url))
             if denied:
+                log.warning("Браузер: отказ для %s (%s)", browser_server.host_of(url), denied)
                 return {"ok": False, "error": denied}
             if not self.store.is_unlocked:  # locked while waiting for Touch ID
                 return {"ok": False, "error": "locked"}
+            log.info("Браузер: запись #%s выдана для %s", entry["id"], browser_server.host_of(url))
             return {"ok": True, "username": entry.get("username", ""), "password": entry.get("password", "")}
         return {"ok": False, "error": "unknown_command"}
 
@@ -799,7 +900,57 @@ class PasswordVaultApp:
             self.last_auth = time.monotonic()
             return None
 
+    def _report_error(self, exc_type, exc, tb) -> None:
+        """Tk callback errors: write the traceback to the log instead of losing it."""
+        log.error("Ошибка в интерфейсе", exc_info=(exc_type, exc, tb))
+        messagebox.showerror(APP_NAME, f"Произошла ошибка: {exc}\n\nПодробности — в разделе «Журнал».")
+
+    def _show_log(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Журнал Password Vault")
+        window.configure(bg=COLORS["card"])
+        center_window(window, 900, 560)
+        body = tk.Frame(window, bg=COLORS["card"], padx=20, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(body, text="Журнал программы", bg=COLORS["card"], fg=COLORS["text"], font=(UI_FONT, fs(16), "bold")).pack(anchor="w")
+        tk.Label(body, text=f"{self.log_path}\nПароли, логины и содержимое записей в журнал не пишутся.", bg=COLORS["card"], fg=COLORS["muted"], font=(UI_FONT, fs(9)), justify="left").pack(anchor="w", pady=(2, 10))
+        buttons = tk.Frame(body, bg=COLORS["card"])
+        buttons.pack(side="bottom", fill="x", pady=(10, 0))
+        frame = tk.Frame(body, bg=COLORS["card"], highlightthickness=1, highlightbackground=COLORS["line"])
+        frame.pack(fill="both", expand=True)
+        text = tk.Text(frame, wrap="none", relief="flat", bd=0, bg="#F8FAFC", fg=COLORS["text"], selectbackground="#DADCFF", selectforeground=COLORS["text"], font=("Menlo" if IS_MAC else "Consolas", fs(9)), padx=8, pady=6)
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+        text.tag_configure("error", foreground=COLORS["danger"])
+        text.tag_configure("warning", foreground="#8A5A00")
+
+        def load() -> None:
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            content = app_logging.read_tail(self.log_path) or "Журнал пока пуст.\n"
+            for line in content.splitlines(keepends=True):
+                tag = "error" if ("  ERROR  " in line or "  CRITICAL" in line) else "warning" if "  WARNING" in line else ""
+                text.insert("end", line, tag)
+            text.configure(state="disabled")
+            text.see("end")
+
+        def reveal() -> None:
+            if IS_MAC:
+                subprocess.Popen(["open", "-R", str(self.log_path)])
+            elif sys.platform == "win32":
+                subprocess.Popen(["explorer", "/select,", str(self.log_path)])
+
+        ttk.Button(buttons, text="Обновить", style="Soft.TButton", command=load).pack(side="left")
+        if IS_MAC or sys.platform == "win32":
+            ttk.Button(buttons, text="Показать файл", style="Soft.TButton", command=reveal).pack(side="left", padx=(8, 0))
+        ttk.Button(buttons, text="Закрыть", style="Accent.TButton", command=window.destroy).pack(side="right")
+        window.bind("<Escape>", lambda _e: window.destroy())
+        load()
+
     def _close(self) -> None:
+        log.info("Выход")
         self.browser.stop()
         self.store.lock()
         if self.clipboard_value:

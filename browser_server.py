@@ -9,6 +9,7 @@ Protocol: one JSON object per line, one request per connection.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
 import sys
@@ -16,6 +17,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
+
+log = logging.getLogger("password_vault")
 
 MAX_REQUEST = 64 * 1024
 
@@ -115,6 +118,7 @@ class BrowserServer:
                 conn.settimeout(None)  # a Touch ID prompt may take a while
                 response = self.handler(request)
             except Exception as exc:  # never let a bad request kill the thread
+                log.exception("Браузер: ошибка обработки запроса")
                 response = {"ok": False, "error": "bad_request", "message": str(exc)}
             try:
                 conn.sendall(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
