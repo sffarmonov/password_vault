@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import time
+import subprocess
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -66,6 +67,29 @@ def resource_path(name: str) -> Path:
     """Path to a bundled file, both from source and inside a PyInstaller build."""
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return base / name
+
+
+APP_EXTENSIONS = {".app"} if sys.platform == "darwin" else {".exe", ".lnk"}
+
+
+def looks_like_path(target: str) -> bool:
+    """True for local paths: /..., ~/..., file://... or a Windows drive like C:/ or C:\\."""
+    is_drive = len(target) > 2 and target[1] == ":" and target[2] in ("/", "\\")
+    return target.startswith(("/", "~", "file://")) or is_drive
+
+
+def local_app_path(target: str) -> Path | None:
+    """Path of a local program from the URL field, e.g. /Applications/AnyConnect.app.
+
+    Only application bundles/executables are accepted, so an imported entry
+    cannot make the "Open" button run an arbitrary script or document.
+    """
+    if not looks_like_path(target):
+        return None
+    if target.startswith("file://"):
+        target = target[len("file://"):]
+    path = Path(target).expanduser()
+    return path if path.suffix.lower() in APP_EXTENSIONS else None
 
 
 def center_window(window: tk.Misc, width: int, height: int) -> None:
@@ -447,7 +471,7 @@ class PasswordVaultApp:
         ttk.Button(card, text="Пароль", style="Soft.TButton", command=lambda: self._copy(entry.get("password", ""), "Пароль")).pack(side="right", padx=(7, 0))
         ttk.Button(card, text="Логин", style="Soft.TButton", command=lambda: self._copy(entry.get("username", ""), "Логин")).pack(side="right", padx=(7, 0))
         if entry.get("url"):
-            ttk.Button(card, text="Открыть", style="Soft.TButton", command=lambda: webbrowser.open(entry["url"] if "://" in entry["url"] else "https://" + entry["url"])).pack(side="right", padx=(7, 0))
+            ttk.Button(card, text="Открыть", style="Soft.TButton", command=lambda: self._open_target(entry["url"])).pack(side="right", padx=(7, 0))
 
     def _select_category(self, category: str) -> None:
         self.active_category = category
@@ -478,6 +502,27 @@ class PasswordVaultApp:
         if messagebox.askyesno(APP_NAME, f"Удалить «{entry.get('title', '')}» без возможности отмены?"):
             self.store.delete_entry(entry["id"])
             self._render_cards()
+
+    def _open_target(self, target: str) -> None:
+        """Open a website, or launch a local application if the URL field holds its path."""
+        target = target.strip()
+        app_path = local_app_path(target)
+        if app_path is not None:
+            if not app_path.exists():
+                messagebox.showerror(APP_NAME, f"Программа не найдена:\n{app_path}")
+                return
+            try:
+                if sys.platform == "darwin":
+                    subprocess.Popen(["open", str(app_path)])
+                else:
+                    os.startfile(str(app_path))  # type: ignore[attr-defined]  # Windows only
+            except OSError as exc:
+                messagebox.showerror(APP_NAME, f"Не удалось запустить программу:\n{exc}")
+            return
+        if looks_like_path(target):
+            messagebox.showerror(APP_NAME, "Можно открыть только сайт или программу (.app на macOS, .exe или ярлык .lnk на Windows).")
+            return
+        webbrowser.open(target if "://" in target else "https://" + target)
 
     def _copy(self, value: str, label: str) -> None:
         if not value:
